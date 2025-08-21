@@ -1,0 +1,16 @@
+# フレーム最適化システムの依存パッケージ
+
+# 画像処理
+opencv-python>=4.5.0
+scikit-image>=0.18.0
+Pillow>=8.0.0
+
+# 数値計算
+numpy>=1.20.0
+scipy>=1.7.0
+
+# その他
+typing-extensions>=3.7.0
+
+# 開発・ビルド用（オプション）
+pyinstaller>=4.0.0
