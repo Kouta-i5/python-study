@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-フレーム自動品質フィルタリングシステム
-一般動画のフレームから、鮮明度と類似度を評価して最適なフレームを選択し、連番でリネームする
+画像品質スクリーニング
+不鮮明画像検出(ラプラシアン分散を使い、ボケている画像とノイズ画像をスクリーニング)とフリーズ検出(SSIMを使いフレーム間の類似度を測り重複画像をスクリーニング)
 """
 
 import argparse
 import glob
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import cv2  # type: ignore
 import numpy as np  # type: ignore
@@ -19,45 +19,55 @@ from skimage.metrics import structural_similarity as ssim  # type: ignore
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class FrameOptimizer:
-    """フレーム最適化クラス"""
+class ImageQualityScreener:
+    """画像品質スクリーニングクラス（改良版）"""
     
     def __init__(self, input_dir: str, output_dir: str, 
-                 sharpness_threshold: float = 100.0, 
-                 similarity_threshold: float = 0.85):
+                 sharpness_threshold_min: Optional[float] = None, 
+                 sharpness_threshold_max: float = 5000.0,
+                 similarity_threshold: float = 0.90):
         """
         初期化
         
         Args:
             input_dir: 入力画像ディレクトリ
             output_dir: 出力画像ディレクトリ
-            sharpness_threshold: 鮮明度閾値（ラプラシアンの分散）
-            similarity_threshold: 類似度閾値（SSIM）
+            sharpness_threshold_min: 鮮明度閾値の下限（Noneの場合は自動設定）
+            sharpness_threshold_max: 鮮明度閾値の上限（デフォルト: 5000.0）
+            similarity_threshold: 類似度閾値（SSIM、デフォルト: 0.90）
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.sharpness_threshold = sharpness_threshold
+        self.sharpness_threshold_min = sharpness_threshold_min
+        self.sharpness_threshold_max = sharpness_threshold_max
         self.similarity_threshold = similarity_threshold
+        
+        # 鮮明度の統計情報
+        self.sharpness_values: List[float] = []
+        self.sharpness_mean: float = 0.0
+        self.sharpness_std: float = 0.0
         
         # 出力ディレクトリが存在しない場合は作成
         os.makedirs(output_dir, exist_ok=True)
         
-        logger.info(f"入力ディレクトリ: {input_dir}")
-        logger.info(f"出力ディレクトリ: {output_dir}")
-        logger.info(f"鮮明度閾値: {sharpness_threshold}")
+        logger.info(f"入力: {input_dir}")
+        logger.info(f"出力: {output_dir}")
+        if sharpness_threshold_min:
+            logger.info(f"鮮明度下限: {sharpness_threshold_min}")
+        logger.info(f"鮮明度上限: {sharpness_threshold_max}")
         logger.info(f"類似度閾値: {similarity_threshold}")
     
-    def calculate_sharpness(self, image: np.ndarray) -> float:
+    def detect_blur_and_noise(self, image: np.ndarray) -> float:
         """
-        画像の鮮明度を計算（ラプラシアンの分散）
+        不鮮明画像検出（ラプラシアンの分散）
         
         Args:
             image: 入力画像
             
         Returns:
-            float: 鮮明度スコア
+            float: 鮮明度スコア（値が低いほどボケ、高いほどノイズ）
         """
-        # グレースケールに変換
+        # ３チャンネルのRGB画像を１チャンネルのグレースケールに変換
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
@@ -71,16 +81,16 @@ class FrameOptimizer:
         
         return sharpness
     
-    def calculate_similarity(self, img1: np.ndarray, img2: np.ndarray) -> float:
+    def detect_freeze(self, img1: np.ndarray, img2: np.ndarray) -> float:
         """
-        2つの画像の類似度を計算（SSIM）
+        フリーズ検出（SSIM）
         
         Args:
             img1: 画像1
             img2: 画像2
             
         Returns:
-            float: SSIMスコア（0-1、1に近いほど類似）
+            float: SSIMスコア（0-1、1に近いほどフリーズの可能性）
         """
         # グレースケールに変換
         if len(img1.shape) == 3:
@@ -102,53 +112,107 @@ class FrameOptimizer:
         
         return similarity
     
-    def filter_by_sharpness(self, image_paths: List[str]) -> List[str]:
+    def load_images_once(self, image_paths: List[str]) -> tuple[List[np.ndarray], List[str], List[float]]:
         """
-        鮮明度でフィルタリング
+        画像を一度だけ読み込み、鮮明度も計算
         
         Args:
             image_paths: 画像パスのリスト
             
         Returns:
-            List[str]: 鮮明度基準を満たす画像パスのリスト
+            tuple: (画像リスト, 有効なパスリスト, 鮮明度リスト)
         """
-        logger.info("鮮明度フィルタリングを開始...")
+        images = []
+        valid_paths = []
+        sharpness_values = []
         
-        sharp_images = []
-        for i, img_path in enumerate(image_paths):
+        for img_path in image_paths:
             try:
                 image = cv2.imread(img_path)
-                if image is None:
-                    logger.warning(f"画像を読み込めません: {img_path}")
-                    continue
-                
-                sharpness = self.calculate_sharpness(image)
-                logger.info(f"{os.path.basename(img_path)}: 鮮明度 = {sharpness:.2f}")
-                
-                if sharpness >= self.sharpness_threshold:
-                    sharp_images.append(img_path)
-                    logger.info(f"✓ 鮮明度基準を満たす: {os.path.basename(img_path)}")
+                if image is not None:
+                    images.append(image)
+                    valid_paths.append(img_path)
+                    sharpness = self.detect_blur_and_noise(image)
+                    sharpness_values.append(sharpness)
                 else:
-                    logger.info(f"✗ 鮮明度基準を満たさない: {os.path.basename(img_path)}")
-                    
+                    logger.warning(f"画像を読み込めません: {img_path}")
             except Exception as e:
-                logger.error(f"画像処理エラー {img_path}: {e}")
+                logger.error(f"画像読み込みエラー {img_path}: {e}")
                 continue
+        
+        return images, valid_paths, sharpness_values
+    
+    def calculate_image_statistics(self, sharpness_values: List[float]) -> None:
+        """
+        鮮明度統計を計算し、適応的な閾値を自動設定
+        
+        Args:
+            sharpness_values: 鮮明度のリスト
+        """
+        logger.info("画像統計情報の計算を開始...")
+        
+        # 統計情報を設定
+        self.sharpness_values = sharpness_values
+        
+        # 統計を計算
+        if self.sharpness_values:
+            self.sharpness_mean = np.mean(self.sharpness_values)
+            self.sharpness_std = np.std(self.sharpness_values)
+            
+            logger.info(f"鮮明度統計: 平均={self.sharpness_mean:.2f}, 標準偏差={self.sharpness_std:.2f}, 枚数={len(self.sharpness_values)}")
+        
+        # 自動閾値設定
+        std_multiplier = 1.5
+        if self.sharpness_threshold_min is None and self.sharpness_values:
+            # 平均 - std_multiplier倍標準偏差で下限を設定（ただし最小値は10）
+            self.sharpness_threshold_min = max(10.0, self.sharpness_mean - std_multiplier * self.sharpness_std)
+            
+            logger.info(f"自動設定された鮮明度閾値下限: {self.sharpness_threshold_min:.2f}")
+            logger.info(f"  (全体平均: {self.sharpness_mean:.2f}, 標準偏差: {self.sharpness_std:.2f}, {std_multiplier}倍標準偏差: {std_multiplier * self.sharpness_std:.2f})")
+    
+    def screen_image_quality(self, image_paths: List[str], images: List[np.ndarray], sharpness_values: List[float]) -> List[str]:
+        """
+        不鮮明画像検出（ボケ画像・ノイズ画像をスクリーニング）
+        
+        Args:
+            image_paths: 画像パスのリスト
+            images: 事前に読み込んだ画像リスト
+            sharpness_values: 事前に計算された鮮明度リスト
+            
+        Returns:
+            List[str]: 品質基準を満たす画像パスのリスト
+        """
+        logger.info("品質スクリーニングを開始...")
+        
+        sharp_images = []
+        for i, (img_path, sharpness) in enumerate(zip(image_paths, sharpness_values)):
+            # ノイズ画像の除外
+            if sharpness > self.sharpness_threshold_max:
+                logger.warning(f"ノイズ画像を除外: {os.path.basename(img_path)} (鮮明度: {sharpness:.2f})")
+                continue
+            
+            # 下限チェック
+            if self.sharpness_threshold_min is not None and sharpness < self.sharpness_threshold_min:
+                logger.info(f"× 鮮明度基準未満: {os.path.basename(img_path)} ({sharpness:.2f})")
+                continue
+            
+            sharp_images.append(img_path)
+            logger.info(f"⚪ 鮮明度基準OK: {os.path.basename(img_path)} ({sharpness:.2f})")
         
         logger.info(f"鮮明度フィルタリング完了: {len(sharp_images)}/{len(image_paths)} 画像が選択")
         return sharp_images
     
-    def filter_by_similarity(self, image_paths: List[str]) -> List[str]:
+    def screen_duplicate_frames(self, image_paths: List[str]) -> List[str]:
         """
-        類似度でフィルタリング（重複除去）
+        フリーズ検出（重複画像をスクリーニング）
         
         Args:
             image_paths: 画像パスのリスト
             
         Returns:
-            List[str]: 類似度フィルタリング後の画像パスのリスト
+            List[str]: 重複除外後の画像パスのリスト
         """
-        logger.info("類似度フィルタリングを開始...")
+        logger.info("重複除外スクリーニングを開始...")
         
         if len(image_paths) <= 1:
             return image_paths
@@ -172,27 +236,24 @@ class FrameOptimizer:
         if len(images) <= 1:
             return valid_paths
         
-        # 類似度フィルタリング
+        # 連続フレーム間の類似度フィルタリング
         selected_indices = [0]  # 最初の画像は必ず選択
         
         for i in range(1, len(images)):
-            is_similar = False
+            # 直前の選択されたフレームとのみ比較
+            prev_idx = selected_indices[-1]
+            similarity = self.detect_freeze(images[i], images[prev_idx])
             
-            for selected_idx in selected_indices:
-                similarity = self.calculate_similarity(images[i], images[selected_idx])
-                logger.info(f"{os.path.basename(valid_paths[i])} vs {os.path.basename(valid_paths[selected_idx])}: 類似度 = {similarity:.3f}")
-                
-                if similarity >= self.similarity_threshold:
-                    is_similar = True
-                    logger.info(f"✗ 類似度が高いため除外: {os.path.basename(valid_paths[i])}")
-                    break
-            
-            if not is_similar:
+            if similarity >= self.similarity_threshold:
+                # フリーズフレームとして除外
+                logger.info(f"× フリーズフレーム除外: {os.path.basename(valid_paths[i])} ({similarity:.3f})")
+            else:
+                # 十分に異なるフレームとして選択
                 selected_indices.append(i)
-                logger.info(f"✓ 類似度基準を満たす: {os.path.basename(valid_paths[i])}")
+                logger.info(f"⚪ フレーム選択: {os.path.basename(valid_paths[i])} ({similarity:.3f})")
         
         selected_paths = [valid_paths[i] for i in selected_indices]
-        logger.info(f"類似度フィルタリング完了: {len(selected_paths)}/{len(valid_paths)} 画像が選択")
+        logger.info(f"連続フレーム類似度フィルタリング完了: {len(selected_paths)}/{len(valid_paths)} 画像が選択")
         
         return selected_paths
     
@@ -239,19 +300,18 @@ class FrameOptimizer:
         Returns:
             List[str]: 最終的な画像パスのリスト
         """
-        logger.info("フレーム最適化処理を開始...")
+        logger.info("画像スクリーニング処理を開始...")
         
-        # 入力画像を取得（ソート）
-        image_pattern = os.path.join(self.input_dir, "*.jpeg")
-        image_paths = sorted(glob.glob(image_pattern))
+        # 入力画像を取得（複数拡張子を一度に検索）
+        extensions = ["*.jpeg", "*.jpg", "*.png", "*.bmp", "*.tiff"]
+        image_paths = []
         
-        if not image_paths:
-            image_pattern = os.path.join(self.input_dir, "*.jpg")
-            image_paths = sorted(glob.glob(image_pattern))
+        for ext in extensions:
+            pattern = os.path.join(self.input_dir, ext)
+            paths = glob.glob(pattern)
+            image_paths.extend(paths)
         
-        if not image_paths:
-            image_pattern = os.path.join(self.input_dir, "*.png")
-            image_paths = sorted(glob.glob(image_pattern))
+        image_paths = sorted(image_paths)
         
         if not image_paths:
             logger.error(f"入力ディレクトリに画像が見つかりません: {self.input_dir}")
@@ -259,44 +319,54 @@ class FrameOptimizer:
         
         logger.info(f"入力画像数: {len(image_paths)}")
         
-        # 1. 鮮明度フィルタリング
-        sharp_images = self.filter_by_sharpness(image_paths)
+        # 0. 画像を一度だけ読み込み、鮮明度も計算
+        images, valid_paths, sharpness_values = self.load_images_once(image_paths)
         
-        # 2. 類似度フィルタリング
-        unique_images = self.filter_by_similarity(sharp_images)
+        # 1. 画像統計情報の計算と自動閾値設定
+        self.calculate_image_statistics(sharpness_values)
+        
+        # 2. 不鮮明画像検出
+        sharp_images = self.screen_image_quality(valid_paths, images, sharpness_values)
+        
+        # 3. フリーズ検出
+        unique_images = self.screen_duplicate_frames(sharp_images)
         
         # 3. リネーム
         final_images = self.rename_images(unique_images)
         
-        logger.info("フレーム最適化処理完了!")
+        logger.info("画像スクリーニング処理完了!")
         logger.info(f"最終結果: {len(final_images)} 画像")
         
         return final_images
 
 def main():
     """メイン関数"""
-    parser = argparse.ArgumentParser(description='フレーム自動品質フィルタリングシステム')
+    parser = argparse.ArgumentParser(description='画像自動品質スクリーニングシステム')
     parser.add_argument('input_dir', help='入力画像ディレクトリ')
     parser.add_argument('output_dir', help='出力画像ディレクトリ')
-    parser.add_argument('--sharpness', type=float, default=100.0, 
-                       help='鮮明度閾値（デフォルト: 100.0）')
-    parser.add_argument('--similarity', type=float, default=0.85, 
-                       help='類似度閾値（デフォルト: 0.85）')
+    parser.add_argument('--sharpness_min', type=float, default=None, 
+                       help='鮮明度閾値の下限（指定しない場合は自動設定）')
+    parser.add_argument('--sharpness_max', type=float, default=5000.0, 
+                       help='鮮明度閾値の上限（デフォルト: 5000.0）')
+    parser.add_argument('--similarity', type=float, default=0.90, 
+                       help='類似度閾値（デフォルト: 0.90）')
+
     
     args = parser.parse_args()
     
-    # フレーム最適化を実行
-    optimizer = FrameOptimizer(
+    # 画像品質スクリーニングを実行
+    screener = ImageQualityScreener(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        sharpness_threshold=args.sharpness,
+        sharpness_threshold_min=args.sharpness_min,
+        sharpness_threshold_max=args.sharpness_max,
         similarity_threshold=args.similarity
     )
     
     try:
-        result = optimizer.process()
+        result = screener.process()
         if result:
-            print(f"\n✅ 処理完了: {len(result)} 画像が最適化されました")
+            print(f"\n✅ 処理完了: {len(result)} 画像がスクリーニングされました")
             print(f"出力先: {args.output_dir}")
         else:
             print("\n❌ 処理に失敗しました")
