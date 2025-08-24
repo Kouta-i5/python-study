@@ -77,8 +77,8 @@ def build_exe():
         
         if os.path.exists(exe_path):
             file_size_mb = os.path.getsize(exe_path) / (1024*1024)
-            print(f"📁 exeファイルの場所: {os.path.abspath(exe_path)}")
-            print(f"📊 ファイルサイズ: {file_size_mb:.1f} MB")
+            print(f"exeファイルの場所: {os.path.abspath(exe_path)}")
+            print(f"ファイルサイズ: {file_size_mb:.1f} MB")
             
             # ファイルサイズの警告
             if file_size_mb > 100:
@@ -99,7 +99,7 @@ def build_exe():
 
 def clean_build_files():
     """ビルドファイルをクリーンアップ"""
-    print("🧹 ビルドファイルをクリーンアップ中...")
+    print("ビルドファイルをクリーンアップ中...")
     
     dirs_to_remove = ["build", "__pycache__"]
     files_to_remove = ["*.spec"]
@@ -120,7 +120,7 @@ def clean_build_files():
 
 def main():
     """メイン関数"""
-    print("🔧 画像品質スクリーニングシステム - Windows exeビルドツール")
+    print("画像品質スクリーニングシステム - Windows exeビルドツール")
     print("=" * 60)
     
     # Windows環境チェック
@@ -149,17 +149,17 @@ def main():
     if not build_exe():
         return False
     
-    print("\n🎉 ビルドが正常に完了しました！")
-    print("\n📁 生成されたファイル:")
+    print("\nビルドが正常に完了しました！")
+    print("\n生成されたファイル:")
     print("  - dist/ImageQualityScreener.exe (メイン実行ファイル)")
     
-    print("\n🚀 使用方法:")
+    print("\n使用方法:")
     print("1. distフォルダ内のImageQualityScreener.exeを実行")
     print("2. コマンドライン引数で入力・出力ディレクトリを指定")
     print("   例: ImageQualityScreener.exe input_folder output_folder")
     print("   例: ImageQualityScreener.exe input_folder output_folder --sharpness 150 --similarity 0.80")
     
-    print("\n💡 配布方法:")
+    print("\n配布方法:")
     print("  - ImageQualityScreener.exe のみを配布")
     print("  - C#アプリケーションから直接呼び出し可能")
     
