@@ -57,6 +57,7 @@ class ImageQualityScreener:
         logger.info(f"鮮明度上限: {sharpness_threshold_max}")
         logger.info(f"類似度閾値: {similarity_threshold}")
     
+    # 不鮮明画像検出（ラプラシアン分散）
     def detect_blur_and_noise(self, image: np.ndarray) -> float:
         """
         不鮮明画像検出（ラプラシアンの分散）
@@ -81,6 +82,7 @@ class ImageQualityScreener:
         
         return sharpness
     
+    # フリーズ検出（SSIM）
     def detect_freeze(self, img1: np.ndarray, img2: np.ndarray) -> float:
         """
         フリーズ検出（SSIM）
@@ -112,6 +114,7 @@ class ImageQualityScreener:
         
         return similarity
     
+    # 画像を一度だけ読み込み、鮮明度も計算
     def load_images_once(self, image_paths: List[str]) -> tuple[List[np.ndarray], List[str], List[float]]:
         """
         画像を一度だけ読み込み、鮮明度も計算
@@ -142,6 +145,7 @@ class ImageQualityScreener:
         
         return images, valid_paths, sharpness_values
     
+    # 鮮明度統計を計算し、適応的な閾値を自動設定
     def calculate_image_statistics(self, sharpness_values: List[float]) -> None:
         """
         鮮明度統計を計算し、適応的な閾値を自動設定
@@ -170,6 +174,7 @@ class ImageQualityScreener:
             logger.info(f"自動設定された鮮明度閾値下限: {self.sharpness_threshold_min:.2f}")
             logger.info(f"  (全体平均: {self.sharpness_mean:.2f}, 標準偏差: {self.sharpness_std:.2f}, {std_multiplier}倍標準偏差: {std_multiplier * self.sharpness_std:.2f})")
     
+    # 不鮮明画像検出（ボケ画像・ノイズ画像をスクリーニング）
     def screen_image_quality(self, image_paths: List[str], images: List[np.ndarray], sharpness_values: List[float]) -> List[str]:
         """
         不鮮明画像検出（ボケ画像・ノイズ画像をスクリーニング）
@@ -202,6 +207,7 @@ class ImageQualityScreener:
         logger.info(f"鮮明度フィルタリング完了: {len(sharp_images)}/{len(image_paths)} 画像が選択")
         return sharp_images
     
+    # フリーズ検出（重複画像をスクリーニング）
     def screen_duplicate_frames(self, image_paths: List[str]) -> List[str]:
         """
         フリーズ検出（重複画像をスクリーニング）

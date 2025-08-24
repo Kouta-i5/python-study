@@ -38,7 +38,7 @@ def install_pyinstaller():
 
 def build_exe():
     """exeファイルをビルド"""
-    print("🚀 exeファイルのビルドを開始...")
+    print("exeファイルのビルドを開始...")
     
     # ビルド設定
     script_name = "main.py"
@@ -140,6 +140,10 @@ def main():
         return False
     
     print("必要なファイルが確認できました")
+    
+    # ビルドファイルをクリーンアップ
+    if not clean_build_files():
+        return False
     
     # PyInstallerをインストール
     if not install_pyinstaller():
