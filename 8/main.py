@@ -31,13 +31,13 @@ class ImageQualityScreener:
         
         Args:
             input_dir: 入力画像ディレクトリ
-            output_dir: 出力画像ディレクトリ
+            output_dir: 出力画像ディレクトリ（入力と同じディレクトリ）
             sharpness_threshold_min: 鮮明度閾値の下限（Noneの場合は自動設定）
             sharpness_threshold_max: 鮮明度閾値の上限（デフォルト: 5000.0）
             similarity_threshold: 類似度閾値（SSIM、デフォルト: 0.90）
         """
         self.input_dir = input_dir
-        self.output_dir = output_dir
+        self.output_dir = output_dir  # 入力と同じディレクトリ
         self.sharpness_threshold_min = sharpness_threshold_min
         self.sharpness_threshold_max = sharpness_threshold_max
         self.similarity_threshold = similarity_threshold
@@ -50,8 +50,7 @@ class ImageQualityScreener:
         # 出力ディレクトリが存在しない場合は作成
         os.makedirs(output_dir, exist_ok=True)
         
-        logger.info(f"入力: {input_dir}")
-        logger.info(f"出力: {output_dir}")
+        logger.info(f"入力・出力: {input_dir}")
         if sharpness_threshold_min:
             logger.info(f"鮮明度下限: {sharpness_threshold_min}")
         logger.info(f"鮮明度上限: {sharpness_threshold_max}")
@@ -166,7 +165,7 @@ class ImageQualityScreener:
             logger.info(f"鮮明度統計: 平均={self.sharpness_mean:.2f}, 標準偏差={self.sharpness_std:.2f}, 枚数={len(self.sharpness_values)}")
         
         # 自動閾値設定
-        std_multiplier = 1.5
+        std_multiplier = 2
         if self.sharpness_threshold_min is None and self.sharpness_values:
             # 平均 - std_multiplier倍標準偏差で下限を設定（ただし最小値は10）
             self.sharpness_threshold_min = max(10.0, self.sharpness_mean - std_multiplier * self.sharpness_std)
@@ -263,6 +262,29 @@ class ImageQualityScreener:
         
         return selected_paths
     
+    def delete_unselected_images(self, all_image_paths: List[str], selected_paths: List[str]) -> None:
+        """
+        選択されなかった画像を削除
+        
+        Args:
+            all_image_paths: 元の全画像パスのリスト
+            selected_paths: 選択された画像パスのリスト
+        """
+        logger.info("選択されなかった画像の削除を開始...")
+        
+        deleted_count = 0
+        for img_path in all_image_paths:
+            if img_path not in selected_paths:
+                try:
+                    os.remove(img_path)
+                    deleted_count += 1
+                    logger.info(f"🗑️ 削除: {os.path.basename(img_path)}")
+                except Exception as e:
+                    logger.error(f"画像削除エラー {img_path}: {e}")
+                    continue
+        
+        logger.info(f"削除完了: {deleted_count} 画像を削除")
+    
     def rename_images(self, image_paths: List[str]) -> List[str]:
         """
         画像を連番でリネーム
@@ -299,9 +321,44 @@ class ImageQualityScreener:
         logger.info(f"リネーム完了: {len(renamed_paths)} 画像を処理")
         return renamed_paths
     
+    def delete_original_images_after_rename(self, original_paths: List[str], renamed_paths: List[str]) -> None:
+        """
+        リネーム後に元画像を削除（名前が同じ場合は削除しない）
+        
+        Args:
+            original_paths: 元の画像パスのリスト
+            renamed_paths: リネーム後の画像パスのリスト
+        """
+        logger.info("リネーム後の元画像削除を開始...")
+        
+        deleted_count = 0
+        for original_path in original_paths:
+            original_filename = os.path.basename(original_path)
+            
+            # リネーム後のファイル名と比較
+            should_delete = True
+            for renamed_path in renamed_paths:
+                renamed_filename = os.path.basename(renamed_path)
+                if original_filename == renamed_filename:
+                    # 名前が同じ場合は削除しない
+                    should_delete = False
+                    logger.info(f"🔒 保持: {original_filename} (名前が同じ)")
+                    break
+            
+            if should_delete:
+                try:
+                    os.remove(original_path)
+                    deleted_count += 1
+                    logger.info(f"🗑️ 削除: {original_filename}")
+                except Exception as e:
+                    logger.error(f"元画像削除エラー {original_path}: {e}")
+                    continue
+        
+        logger.info(f"元画像削除完了: {deleted_count} 画像を削除")
+    
     def process(self) -> List[str]:
         """
-        メイン処理：鮮明度フィルタリング → 類似度フィルタリング → リネーム
+        メイン処理：鮮明度フィルタリング → 類似度フィルタリング → 選択されなかった画像削除 → リネーム → 元画像削除
         
         Returns:
             List[str]: 最終的な画像パスのリスト
@@ -337,8 +394,14 @@ class ImageQualityScreener:
         # 3. フリーズ検出
         unique_images = self.screen_duplicate_frames(sharp_images)
         
-        # 3. リネーム
+        # 4. 選択されなかった画像を削除
+        self.delete_unselected_images(image_paths, unique_images)
+        
+        # 5. リネーム
         final_images = self.rename_images(unique_images)
+        
+        # 6. リネーム後に元画像を削除（名前が同じ場合は削除しない）
+        self.delete_original_images_after_rename(unique_images, final_images)
         
         logger.info("画像スクリーニング処理完了!")
         logger.info(f"最終結果: {len(final_images)} 画像")
@@ -347,9 +410,9 @@ class ImageQualityScreener:
 
 def main():
     """メイン関数"""
-    parser = argparse.ArgumentParser(description='画像自動品質スクリーニングシステム')
+    parser = argparse.ArgumentParser(description='画像自動品質スクリーニングシステム（入力・出力同一ディレクトリ）')
     parser.add_argument('input_dir', help='入力画像ディレクトリ')
-    parser.add_argument('output_dir', help='出力画像ディレクトリ')
+    parser.add_argument('output_dir', help='出力画像ディレクトリ（入力と同じディレクトリ）')
     parser.add_argument('--sharpness_min', type=float, default=None, 
                        help='鮮明度閾値の下限（指定しない場合は自動設定）')
     parser.add_argument('--sharpness_max', type=float, default=5000.0, 
